@@ -13,7 +13,7 @@
 ## 安装方法
 
 1. 首先确保您的浏览器已安装 [Tampermonkey](https://www.tampermonkey.net/) 扩展
-2. 点击 [这里](hhttps://github.com/cheluen/bilibili_onlyddownload_mp3/raw/refs/heads/main/bilibili_audio_downloader.user.js) 安装脚本（或者将`bilibili_audio_downloader.user.js`文件拖拽到Tampermonkey扩展页面）
+2. 点击 [这里](https://github.com/cheluen/bilibili_onlyddownload_mp3/raw/refs/heads/main/bilibili_audio_downloader.user.js) 安装脚本（或者将`bilibili_audio_downloader.user.js`文件拖拽到Tampermonkey扩展页面）
 3. 在弹出的安装页面中点击「安装」按钮
 
 ## 使用方法
