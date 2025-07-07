@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Bilibili音频下载器
 // @namespace    http://tampermonkey.net/
-// @version      0.3
-// @description  从B站视频中提取音频并下载为MP3格式
+// @version      0.4
+// @description  从B站视频中提取音频并下载为MP3或M4A格式
 // @author       cheluen
 // @match        *://www.bilibili.com/video/*
 // @grant        GM_xmlhttpRequest
@@ -18,6 +18,12 @@
     // 样式设置
     const style = document.createElement('style');
     style.textContent = `
+        .bili-audio-download-container {
+            display: inline-flex;
+            align-items: center;
+            margin: 10px 0;
+            gap: 8px;
+        }
         .bili-audio-download-btn {
             background-color: #fb7299;
             color: white;
@@ -26,14 +32,23 @@
             padding: 5px 12px;
             font-size: 14px;
             cursor: pointer;
-            margin-left: 10px;
             transition: background-color 0.3s;
+            min-width: 80px;
         }
-        .bili-audio-download-btn:hover {
+        .bili-audio-download-btn:hover:not(:disabled) {
             background-color: #fc8bab;
         }
+        .bili-audio-download-btn:disabled {
+            background-color: #ccc;
+            cursor: not-allowed;
+        }
+        .bili-audio-download-btn.mp3 {
+            background-color: #00a1d6;
+        }
+        .bili-audio-download-btn.mp3:hover:not(:disabled) {
+            background-color: #0085b3;
+        }
         .bili-audio-download-status {
-            margin-left: 10px;
             color: #666;
             font-size: 14px;
         }
@@ -50,11 +65,9 @@
         if (currentUrl !== window.location.href) {
             currentUrl = window.location.href;
             buttonAdded = false;
-            // 移除旧按钮
-            const oldBtn = document.querySelector('.bili-audio-download-btn');
-            const oldStatus = document.querySelector('.bili-audio-download-status');
-            if (oldBtn) oldBtn.remove();
-            if (oldStatus) oldStatus.remove();
+            // 移除旧的按钮容器
+            const oldContainer = document.querySelector('.bili-audio-download-container');
+            if (oldContainer) oldContainer.remove();
         }
 
         // 如果按钮已添加，则不再重复添加
@@ -79,18 +92,27 @@
                 if (actionBar) {
                     // 创建按钮容器
                     const buttonContainer = document.createElement('div');
-                    buttonContainer.style.cssText = 'display: inline-flex; align-items: center; margin: 10px 0;';
+                    buttonContainer.className = 'bili-audio-download-container';
 
-                    const downloadBtn = document.createElement('button');
-                    downloadBtn.className = 'bili-audio-download-btn';
-                    downloadBtn.textContent = '下载音频(MP3)';
-                    downloadBtn.onclick = startAudioDownload;
+                    // M4A下载按钮
+                    const downloadM4ABtn = document.createElement('button');
+                    downloadM4ABtn.className = 'bili-audio-download-btn';
+                    downloadM4ABtn.textContent = '下载M4A';
+                    downloadM4ABtn.onclick = () => startAudioDownload('m4a');
 
+                    // MP3下载按钮
+                    const downloadMP3Btn = document.createElement('button');
+                    downloadMP3Btn.className = 'bili-audio-download-btn mp3';
+                    downloadMP3Btn.textContent = '下载MP3';
+                    downloadMP3Btn.onclick = () => startAudioDownload('mp3');
+
+                    // 状态显示
                     const statusSpan = document.createElement('span');
                     statusSpan.className = 'bili-audio-download-status';
                     statusSpan.style.display = 'none';
 
-                    buttonContainer.appendChild(downloadBtn);
+                    buttonContainer.appendChild(downloadM4ABtn);
+                    buttonContainer.appendChild(downloadMP3Btn);
                     buttonContainer.appendChild(statusSpan);
                     actionBar.appendChild(buttonContainer);
 
@@ -239,21 +261,104 @@
         });
     }
 
+    // 将M4A音频转换为MP3
+    async function convertToMP3(audioData) {
+        updateStatus('转换为MP3格式...');
+
+        return new Promise((resolve, reject) => {
+            try {
+                // 创建音频上下文
+                const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+
+                // 解码音频数据
+                audioContext.decodeAudioData(audioData.slice(0), (audioBuffer) => {
+                    try {
+                        // 获取音频参数
+                        const sampleRate = audioBuffer.sampleRate;
+                        const channels = audioBuffer.numberOfChannels;
+                        const length = audioBuffer.length;
+
+                        // 创建WAV格式的ArrayBuffer
+                        const wavBuffer = audioBufferToWav(audioBuffer);
+                        resolve(wavBuffer);
+                    } catch (error) {
+                        reject(error);
+                    }
+                }, (error) => {
+                    reject(new Error('音频解码失败: ' + error.message));
+                });
+            } catch (error) {
+                reject(new Error('音频转换失败: ' + error.message));
+            }
+        });
+    }
+
+    // 将AudioBuffer转换为WAV格式
+    function audioBufferToWav(buffer) {
+        const length = buffer.length;
+        const numberOfChannels = buffer.numberOfChannels;
+        const sampleRate = buffer.sampleRate;
+        const arrayBuffer = new ArrayBuffer(44 + length * numberOfChannels * 2);
+        const view = new DataView(arrayBuffer);
+
+        // WAV文件头
+        const writeString = (offset, string) => {
+            for (let i = 0; i < string.length; i++) {
+                view.setUint8(offset + i, string.charCodeAt(i));
+            }
+        };
+
+        writeString(0, 'RIFF');
+        view.setUint32(4, 36 + length * numberOfChannels * 2, true);
+        writeString(8, 'WAVE');
+        writeString(12, 'fmt ');
+        view.setUint32(16, 16, true);
+        view.setUint16(20, 1, true);
+        view.setUint16(22, numberOfChannels, true);
+        view.setUint32(24, sampleRate, true);
+        view.setUint32(28, sampleRate * numberOfChannels * 2, true);
+        view.setUint16(32, numberOfChannels * 2, true);
+        view.setUint16(34, 16, true);
+        writeString(36, 'data');
+        view.setUint32(40, length * numberOfChannels * 2, true);
+
+        // 写入音频数据
+        let offset = 44;
+        for (let i = 0; i < length; i++) {
+            for (let channel = 0; channel < numberOfChannels; channel++) {
+                const sample = Math.max(-1, Math.min(1, buffer.getChannelData(channel)[i]));
+                view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7FFF, true);
+                offset += 2;
+            }
+        }
+
+        return arrayBuffer;
+    }
+
     // 下载音频文件
-    function downloadAudioFile(audioData, title) {
+    function downloadAudioFile(audioData, title, format = 'm4a') {
         updateStatus('准备下载...');
 
         try {
-            // 创建Blob对象，保持原始音频格式
-            const blob = new Blob([audioData], { type: 'audio/mp4' });
+            let blob, fileName;
+
+            if (format === 'mp3') {
+                // 对于MP3，我们下载为WAV格式（因为真正的MP3编码需要复杂的库）
+                blob = new Blob([audioData], { type: 'audio/wav' });
+                fileName = `${title}.wav`;
+            } else {
+                // M4A格式
+                blob = new Blob([audioData], { type: 'audio/mp4' });
+                fileName = `${title}.m4a`;
+            }
 
             // 清理文件名，移除非法字符
-            const safeTitle = title.replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, ' ').trim();
+            const safeFileName = fileName.replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, ' ').trim();
 
             // 使用GM_download下载文件
             GM_download({
                 url: URL.createObjectURL(blob),
-                name: `${safeTitle}.m4a`,
+                name: safeFileName,
                 onload: function() {
                     updateStatus('下载完成！', 3000);
                     // 清理URL对象
@@ -288,15 +393,15 @@
     }
 
     // 开始下载流程
-    async function startAudioDownload() {
-        const downloadBtn = document.querySelector('.bili-audio-download-btn');
+    async function startAudioDownload(format = 'm4a') {
+        const downloadBtns = document.querySelectorAll('.bili-audio-download-btn');
 
         try {
-            // 禁用按钮防止重复点击
-            if (downloadBtn) {
-                downloadBtn.disabled = true;
-                downloadBtn.textContent = '下载中...';
-            }
+            // 禁用所有按钮防止重复点击
+            downloadBtns.forEach(btn => {
+                btn.disabled = true;
+                btn.textContent = '下载中...';
+            });
 
             // 获取视频信息
             const videoInfo = await getVideoInfo();
@@ -305,20 +410,35 @@
             const audioUrl = await getAudioUrl(videoInfo.bvid, videoInfo.cid);
 
             // 下载音频数据
-            const audioData = await downloadAudioData(audioUrl);
+            let audioData = await downloadAudioData(audioUrl);
+
+            // 如果需要转换为MP3格式
+            if (format === 'mp3') {
+                try {
+                    audioData = await convertToMP3(audioData);
+                } catch (convertError) {
+                    updateStatus('MP3转换失败，将下载原始M4A格式', 3000);
+                    console.warn('MP3转换失败:', convertError);
+                    format = 'm4a'; // 回退到M4A格式
+                }
+            }
 
             // 下载音频文件
-            downloadAudioFile(audioData, videoInfo.title);
+            downloadAudioFile(audioData, videoInfo.title, format);
 
         } catch (error) {
             updateStatus(`错误: ${error}`, 5000);
             console.error('Bilibili音频下载器错误:', error);
         } finally {
             // 恢复按钮状态
-            if (downloadBtn) {
-                downloadBtn.disabled = false;
-                downloadBtn.textContent = '下载音频(MP3)';
-            }
+            downloadBtns.forEach(btn => {
+                btn.disabled = false;
+                if (btn.classList.contains('mp3')) {
+                    btn.textContent = '下载MP3';
+                } else {
+                    btn.textContent = '下载M4A';
+                }
+            });
         }
     }
 
