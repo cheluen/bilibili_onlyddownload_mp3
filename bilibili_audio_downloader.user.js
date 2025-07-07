@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bilibili音频下载器
 // @namespace    http://tampermonkey.net/
-// @version      0.4
+// @version      0.5
 // @description  从B站视频中提取音频并下载为MP3或M4A格式
 // @author       cheluen
 // @match        *://www.bilibili.com/video/*
@@ -21,36 +21,97 @@
         .bili-audio-download-container {
             display: inline-flex;
             align-items: center;
-            margin: 10px 0;
-            gap: 8px;
+            margin: 15px 0;
+            padding: 12px 16px;
+            background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+            border-radius: 12px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
+            gap: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
         }
         .bili-audio-download-btn {
-            background-color: #fb7299;
+            position: relative;
+            background: linear-gradient(135deg, #fb7299 0%, #f093fb 100%);
             color: white;
             border: none;
-            border-radius: 4px;
-            padding: 5px 12px;
+            border-radius: 8px;
+            padding: 10px 20px;
             font-size: 14px;
+            font-weight: 600;
             cursor: pointer;
-            transition: background-color 0.3s;
-            min-width: 80px;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            min-width: 100px;
+            box-shadow: 0 2px 8px rgba(251, 114, 153, 0.3);
+            overflow: hidden;
+        }
+        .bili-audio-download-btn::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: -100%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.2), transparent);
+            transition: left 0.5s;
+        }
+        .bili-audio-download-btn:hover::before {
+            left: 100%;
         }
         .bili-audio-download-btn:hover:not(:disabled) {
-            background-color: #fc8bab;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 15px rgba(251, 114, 153, 0.4);
+        }
+        .bili-audio-download-btn:active:not(:disabled) {
+            transform: translateY(0);
         }
         .bili-audio-download-btn:disabled {
-            background-color: #ccc;
+            background: linear-gradient(135deg, #bbb 0%, #999 100%);
             cursor: not-allowed;
+            transform: none;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
         }
         .bili-audio-download-btn.mp3 {
-            background-color: #00a1d6;
+            background: linear-gradient(135deg, #00a1d6 0%, #0078d4 100%);
+            box-shadow: 0 2px 8px rgba(0, 161, 214, 0.3);
         }
         .bili-audio-download-btn.mp3:hover:not(:disabled) {
-            background-color: #0085b3;
+            box-shadow: 0 4px 15px rgba(0, 161, 214, 0.4);
+        }
+        .bili-audio-download-btn .btn-icon {
+            margin-right: 6px;
+            font-size: 16px;
         }
         .bili-audio-download-status {
-            color: #666;
+            color: #555;
             font-size: 14px;
+            font-weight: 500;
+            padding: 8px 12px;
+            background: rgba(255, 255, 255, 0.8);
+            border-radius: 6px;
+            border-left: 3px solid #00a1d6;
+            min-width: 120px;
+        }
+        .bili-audio-download-progress {
+            width: 100%;
+            height: 4px;
+            background: rgba(255, 255, 255, 0.3);
+            border-radius: 2px;
+            overflow: hidden;
+            margin-top: 4px;
+        }
+        .bili-audio-download-progress-bar {
+            height: 100%;
+            background: linear-gradient(90deg, #00a1d6, #0078d4);
+            border-radius: 2px;
+            transition: width 0.3s ease;
+            width: 0%;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.7; }
+        }
+        .bili-audio-download-btn.loading {
+            animation: pulse 1.5s infinite;
         }
     `;
     document.head.appendChild(style);
@@ -97,23 +158,29 @@
                     // M4A下载按钮
                     const downloadM4ABtn = document.createElement('button');
                     downloadM4ABtn.className = 'bili-audio-download-btn';
-                    downloadM4ABtn.textContent = '下载M4A';
+                    downloadM4ABtn.innerHTML = '<span class="btn-icon">🎵</span>下载M4A';
                     downloadM4ABtn.onclick = () => startAudioDownload('m4a');
 
                     // MP3下载按钮
                     const downloadMP3Btn = document.createElement('button');
                     downloadMP3Btn.className = 'bili-audio-download-btn mp3';
-                    downloadMP3Btn.textContent = '下载MP3';
+                    downloadMP3Btn.innerHTML = '<span class="btn-icon">🎧</span>下载MP3';
                     downloadMP3Btn.onclick = () => startAudioDownload('mp3');
 
                     // 状态显示
-                    const statusSpan = document.createElement('span');
-                    statusSpan.className = 'bili-audio-download-status';
-                    statusSpan.style.display = 'none';
+                    const statusDiv = document.createElement('div');
+                    statusDiv.className = 'bili-audio-download-status';
+                    statusDiv.style.display = 'none';
+                    statusDiv.innerHTML = `
+                        <div class="status-text">准备中...</div>
+                        <div class="bili-audio-download-progress">
+                            <div class="bili-audio-download-progress-bar"></div>
+                        </div>
+                    `;
 
                     buttonContainer.appendChild(downloadM4ABtn);
                     buttonContainer.appendChild(downloadMP3Btn);
-                    buttonContainer.appendChild(statusSpan);
+                    buttonContainer.appendChild(statusDiv);
                     actionBar.appendChild(buttonContainer);
 
                     // 标记按钮已添加
@@ -254,47 +321,62 @@
                 onprogress: function(progress) {
                     if (progress.lengthComputable) {
                         const percent = Math.round((progress.loaded / progress.total) * 100);
-                        updateStatus(`下载中: ${percent}%`);
+                        const downloadPercent = 25 + Math.round(percent * 0.15); // 25-40%的进度范围
+                        updateStatus(`下载音频数据: ${percent}%`, 0);
+                        updateProgress(downloadPercent);
                     }
                 }
             });
         });
     }
 
-    // 将M4A音频转换为MP3
-    async function convertToMP3(audioData) {
-        updateStatus('转换为MP3格式...');
+    // 将M4A音频转换为WAV格式（异步处理避免页面卡顿）
+    async function convertToWAV(audioData) {
+        updateStatus('正在转换音频格式...', 0);
+        updateProgress(10);
 
         return new Promise((resolve, reject) => {
             try {
                 // 创建音频上下文
                 const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                updateProgress(20);
 
-                // 解码音频数据
-                audioContext.decodeAudioData(audioData.slice(0), (audioBuffer) => {
-                    try {
-                        // 获取音频参数
-                        const sampleRate = audioBuffer.sampleRate;
-                        const channels = audioBuffer.numberOfChannels;
-                        const length = audioBuffer.length;
+                // 使用setTimeout让UI有时间更新
+                setTimeout(() => {
+                    // 解码音频数据
+                    audioContext.decodeAudioData(audioData.slice(0),
+                        async (audioBuffer) => {
+                            try {
+                                updateProgress(50);
+                                updateStatus('正在生成WAV文件...', 0);
 
-                        // 创建WAV格式的ArrayBuffer
-                        const wavBuffer = audioBufferToWav(audioBuffer);
-                        resolve(wavBuffer);
-                    } catch (error) {
-                        reject(error);
-                    }
-                }, (error) => {
-                    reject(new Error('音频解码失败: ' + error.message));
-                });
+                                // 使用setTimeout分块处理，避免阻塞UI
+                                setTimeout(async () => {
+                                    try {
+                                        const wavBuffer = await audioBufferToWavAsync(audioBuffer);
+                                        updateProgress(100);
+                                        resolve(wavBuffer);
+                                    } catch (error) {
+                                        reject(error);
+                                    }
+                                }, 100);
+                            } catch (error) {
+                                reject(error);
+                            }
+                        },
+                        (error) => {
+                            reject(new Error('音频解码失败: ' + error.message));
+                        }
+                    );
+                }, 100);
             } catch (error) {
                 reject(new Error('音频转换失败: ' + error.message));
             }
         });
     }
 
-    // 将AudioBuffer转换为WAV格式
-    function audioBufferToWav(buffer) {
+    // 将AudioBuffer转换为WAV格式（异步分块处理）
+    async function audioBufferToWavAsync(buffer) {
         const length = buffer.length;
         const numberOfChannels = buffer.numberOfChannels;
         const sampleRate = buffer.sampleRate;
@@ -322,13 +404,29 @@
         writeString(36, 'data');
         view.setUint32(40, length * numberOfChannels * 2, true);
 
-        // 写入音频数据
+        // 分块写入音频数据，避免阻塞UI
+        const chunkSize = 8192; // 每次处理8192个样本
         let offset = 44;
-        for (let i = 0; i < length; i++) {
-            for (let channel = 0; channel < numberOfChannels; channel++) {
-                const sample = Math.max(-1, Math.min(1, buffer.getChannelData(channel)[i]));
-                view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7FFF, true);
-                offset += 2;
+
+        for (let start = 0; start < length; start += chunkSize) {
+            const end = Math.min(start + chunkSize, length);
+
+            // 处理当前块
+            for (let i = start; i < end; i++) {
+                for (let channel = 0; channel < numberOfChannels; channel++) {
+                    const sample = Math.max(-1, Math.min(1, buffer.getChannelData(channel)[i]));
+                    view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7FFF, true);
+                    offset += 2;
+                }
+            }
+
+            // 更新进度
+            const progress = 50 + Math.round((end / length) * 40);
+            updateProgress(progress);
+
+            // 让出控制权给UI线程
+            if (start + chunkSize < length) {
+                await new Promise(resolve => setTimeout(resolve, 1));
             }
         }
 
@@ -337,13 +435,14 @@
 
     // 下载音频文件
     function downloadAudioFile(audioData, title, format = 'm4a') {
-        updateStatus('准备下载...');
+        updateStatus('准备下载文件...', 0);
+        updateProgress(95);
 
         try {
             let blob, fileName;
 
             if (format === 'mp3') {
-                // 对于MP3，我们下载为WAV格式（因为真正的MP3编码需要复杂的库）
+                // WAV格式
                 blob = new Blob([audioData], { type: 'audio/wav' });
                 fileName = `${title}.wav`;
             } else {
@@ -360,35 +459,57 @@
                 url: URL.createObjectURL(blob),
                 name: safeFileName,
                 onload: function() {
-                    updateStatus('下载完成！', 3000);
+                    updateProgress(100);
+                    updateStatus('✅ 下载完成！', 3000);
                     // 清理URL对象
                     setTimeout(() => {
                         URL.revokeObjectURL(blob);
                     }, 5000);
                 },
                 onerror: function(error) {
-                    updateStatus(`下载失败: ${error.message || error}`, 5000);
+                    updateStatus(`❌ 下载失败: ${error.message || error}`, 5000);
+                    updateProgress(0);
                     URL.revokeObjectURL(blob);
                 }
             });
         } catch (error) {
-            updateStatus(`下载失败: ${error.message}`, 5000);
+            updateStatus(`❌ 下载失败: ${error.message}`, 5000);
+            updateProgress(0);
             console.error('下载音频文件错误:', error);
         }
     }
 
     // 更新状态显示
     function updateStatus(message, hideAfter = 0) {
-        const statusSpan = document.querySelector('.bili-audio-download-status');
-        if (statusSpan) {
-            statusSpan.textContent = message;
-            statusSpan.style.display = 'inline';
-            
+        const statusDiv = document.querySelector('.bili-audio-download-status');
+        if (statusDiv) {
+            const statusText = statusDiv.querySelector('.status-text');
+            if (statusText) {
+                statusText.textContent = message;
+            } else {
+                statusDiv.innerHTML = `
+                    <div class="status-text">${message}</div>
+                    <div class="bili-audio-download-progress">
+                        <div class="bili-audio-download-progress-bar"></div>
+                    </div>
+                `;
+            }
+            statusDiv.style.display = 'block';
+
             if (hideAfter > 0) {
                 setTimeout(() => {
-                    statusSpan.style.display = 'none';
+                    statusDiv.style.display = 'none';
+                    updateProgress(0); // 重置进度条
                 }, hideAfter);
             }
+        }
+    }
+
+    // 更新进度条
+    function updateProgress(percent) {
+        const progressBar = document.querySelector('.bili-audio-download-progress-bar');
+        if (progressBar) {
+            progressBar.style.width = `${percent}%`;
         }
     }
 
@@ -397,30 +518,43 @@
         const downloadBtns = document.querySelectorAll('.bili-audio-download-btn');
 
         try {
-            // 禁用所有按钮防止重复点击
+            // 禁用所有按钮防止重复点击，添加加载动画
             downloadBtns.forEach(btn => {
                 btn.disabled = true;
-                btn.textContent = '下载中...';
+                btn.classList.add('loading');
+                if (btn.classList.contains('mp3')) {
+                    btn.innerHTML = '<span class="btn-icon">⏳</span>转换中...';
+                } else {
+                    btn.innerHTML = '<span class="btn-icon">⏬</span>下载中...';
+                }
             });
+
+            updateProgress(0);
 
             // 获取视频信息
             const videoInfo = await getVideoInfo();
+            updateProgress(15);
 
             // 获取音频URL
             const audioUrl = await getAudioUrl(videoInfo.bvid, videoInfo.cid);
+            updateProgress(25);
 
             // 下载音频数据
             let audioData = await downloadAudioData(audioUrl);
+            updateProgress(40);
 
-            // 如果需要转换为MP3格式
+            // 如果需要转换为WAV格式
             if (format === 'mp3') {
                 try {
-                    audioData = await convertToMP3(audioData);
+                    audioData = await convertToWAV(audioData);
                 } catch (convertError) {
-                    updateStatus('MP3转换失败，将下载原始M4A格式', 3000);
-                    console.warn('MP3转换失败:', convertError);
+                    updateStatus('音频转换失败，将下载原始M4A格式', 3000);
+                    console.warn('音频转换失败:', convertError);
                     format = 'm4a'; // 回退到M4A格式
+                    updateProgress(90);
                 }
+            } else {
+                updateProgress(90);
             }
 
             // 下载音频文件
@@ -428,17 +562,21 @@
 
         } catch (error) {
             updateStatus(`错误: ${error}`, 5000);
+            updateProgress(0);
             console.error('Bilibili音频下载器错误:', error);
         } finally {
             // 恢复按钮状态
-            downloadBtns.forEach(btn => {
-                btn.disabled = false;
-                if (btn.classList.contains('mp3')) {
-                    btn.textContent = '下载MP3';
-                } else {
-                    btn.textContent = '下载M4A';
-                }
-            });
+            setTimeout(() => {
+                downloadBtns.forEach(btn => {
+                    btn.disabled = false;
+                    btn.classList.remove('loading');
+                    if (btn.classList.contains('mp3')) {
+                        btn.innerHTML = '<span class="btn-icon">🎧</span>下载MP3';
+                    } else {
+                        btn.innerHTML = '<span class="btn-icon">🎵</span>下载M4A';
+                    }
+                });
+            }, 1000);
         }
     }
 
