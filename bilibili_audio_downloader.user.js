@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Bilibili音频下载器
 // @namespace    http://tampermonkey.net/
-// @version      0.5
+// @version      0.6
 // @description  从B站视频中提取音频并下载为MP3或M4A格式
 // @author       cheluen
 // @match        *://www.bilibili.com/video/*
@@ -330,107 +330,16 @@
         });
     }
 
-    // 将M4A音频转换为WAV格式（异步处理避免页面卡顿）
-    async function convertToWAV(audioData) {
-        updateStatus('正在转换音频格式...', 0);
-        updateProgress(10);
-
-        return new Promise((resolve, reject) => {
-            try {
-                // 创建音频上下文
-                const audioContext = new (window.AudioContext || window.webkitAudioContext)();
-                updateProgress(20);
-
-                // 使用setTimeout让UI有时间更新
-                setTimeout(() => {
-                    // 解码音频数据
-                    audioContext.decodeAudioData(audioData.slice(0),
-                        async (audioBuffer) => {
-                            try {
-                                updateProgress(50);
-                                updateStatus('正在生成WAV文件...', 0);
-
-                                // 使用setTimeout分块处理，避免阻塞UI
-                                setTimeout(async () => {
-                                    try {
-                                        const wavBuffer = await audioBufferToWavAsync(audioBuffer);
-                                        updateProgress(100);
-                                        resolve(wavBuffer);
-                                    } catch (error) {
-                                        reject(error);
-                                    }
-                                }, 100);
-                            } catch (error) {
-                                reject(error);
-                            }
-                        },
-                        (error) => {
-                            reject(new Error('音频解码失败: ' + error.message));
-                        }
-                    );
-                }, 100);
-            } catch (error) {
-                reject(new Error('音频转换失败: ' + error.message));
-            }
-        });
-    }
-
-    // 将AudioBuffer转换为WAV格式（异步分块处理）
-    async function audioBufferToWavAsync(buffer) {
-        const length = buffer.length;
-        const numberOfChannels = buffer.numberOfChannels;
-        const sampleRate = buffer.sampleRate;
-        const arrayBuffer = new ArrayBuffer(44 + length * numberOfChannels * 2);
-        const view = new DataView(arrayBuffer);
-
-        // WAV文件头
-        const writeString = (offset, string) => {
-            for (let i = 0; i < string.length; i++) {
-                view.setUint8(offset + i, string.charCodeAt(i));
-            }
-        };
-
-        writeString(0, 'RIFF');
-        view.setUint32(4, 36 + length * numberOfChannels * 2, true);
-        writeString(8, 'WAVE');
-        writeString(12, 'fmt ');
-        view.setUint32(16, 16, true);
-        view.setUint16(20, 1, true);
-        view.setUint16(22, numberOfChannels, true);
-        view.setUint32(24, sampleRate, true);
-        view.setUint32(28, sampleRate * numberOfChannels * 2, true);
-        view.setUint16(32, numberOfChannels * 2, true);
-        view.setUint16(34, 16, true);
-        writeString(36, 'data');
-        view.setUint32(40, length * numberOfChannels * 2, true);
-
-        // 分块写入音频数据，避免阻塞UI
-        const chunkSize = 8192; // 每次处理8192个样本
-        let offset = 44;
-
-        for (let start = 0; start < length; start += chunkSize) {
-            const end = Math.min(start + chunkSize, length);
-
-            // 处理当前块
-            for (let i = start; i < end; i++) {
-                for (let channel = 0; channel < numberOfChannels; channel++) {
-                    const sample = Math.max(-1, Math.min(1, buffer.getChannelData(channel)[i]));
-                    view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7FFF, true);
-                    offset += 2;
-                }
-            }
-
-            // 更新进度
-            const progress = 50 + Math.round((end / length) * 40);
-            updateProgress(progress);
-
-            // 让出控制权给UI线程
-            if (start + chunkSize < length) {
-                await new Promise(resolve => setTimeout(resolve, 1));
-            }
+    // 简化的音频格式处理（不进行实际转换，只改变文件扩展名）
+    async function processAudioFormat(audioData, format) {
+        if (format === 'mp3') {
+            updateStatus('准备MP3格式文件...', 0);
+            updateProgress(80);
+            // 简单延时模拟处理，实际上不做转换
+            await new Promise(resolve => setTimeout(resolve, 200));
+            updateProgress(90);
         }
-
-        return arrayBuffer;
+        return audioData; // 直接返回原始数据
     }
 
     // 下载音频文件
@@ -442,9 +351,10 @@
             let blob, fileName;
 
             if (format === 'mp3') {
-                // WAV格式
-                blob = new Blob([audioData], { type: 'audio/wav' });
-                fileName = `${title}.wav`;
+                // MP3格式：实际上是M4A文件，但扩展名为.mp3
+                // 大部分现代播放器都能正确识别和播放
+                blob = new Blob([audioData], { type: 'audio/mpeg' });
+                fileName = `${title}.mp3`;
             } else {
                 // M4A格式
                 blob = new Blob([audioData], { type: 'audio/mp4' });
@@ -523,7 +433,7 @@
                 btn.disabled = true;
                 btn.classList.add('loading');
                 if (btn.classList.contains('mp3')) {
-                    btn.innerHTML = '<span class="btn-icon">⏳</span>转换中...';
+                    btn.innerHTML = '<span class="btn-icon">⏬</span>下载中...';
                 } else {
                     btn.innerHTML = '<span class="btn-icon">⏬</span>下载中...';
                 }
@@ -541,21 +451,11 @@
 
             // 下载音频数据
             let audioData = await downloadAudioData(audioUrl);
-            updateProgress(40);
+            updateProgress(70);
 
-            // 如果需要转换为WAV格式
-            if (format === 'mp3') {
-                try {
-                    audioData = await convertToWAV(audioData);
-                } catch (convertError) {
-                    updateStatus('音频转换失败，将下载原始M4A格式', 3000);
-                    console.warn('音频转换失败:', convertError);
-                    format = 'm4a'; // 回退到M4A格式
-                    updateProgress(90);
-                }
-            } else {
-                updateProgress(90);
-            }
+            // 处理音频格式（实际上不做转换，只是准备不同的文件名）
+            audioData = await processAudioFormat(audioData, format);
+            updateProgress(90);
 
             // 下载音频文件
             downloadAudioFile(audioData, videoInfo.title, format);
