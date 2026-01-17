@@ -1,15 +1,15 @@
 // ==UserScript==
 // @name         Bilibili音频下载器
 // @namespace    http://tampermonkey.net/
-// @version      0.6.1
+// @version      0.6.2
 // @description  从B站视频中提取音频并下载为MP3或M4A格式
 // @author       cheluen
 // @match        *://www.bilibili.com/video/*
 // @run-at       document-idle
+// @noframes
 // @grant        GM_xmlhttpRequest
 // @grant        GM_download
 // @grant        GM_addStyle
-// @grant        window.onurlchange
 // @connect      api.bilibili.com
 // @connect      *
 // ==/UserScript==
@@ -22,15 +22,23 @@
 
     const CSS = `
         .bili-audio-download-container {
-            display: inline-flex;
+            position: fixed;
+            right: 16px;
+            bottom: 16px;
+            z-index: 999999;
+            display: flex;
+            flex-wrap: wrap;
             align-items: center;
-            margin: 15px 0;
-            padding: 12px 16px;
+            justify-content: flex-end;
+            gap: 10px;
+            max-width: min(520px, calc(100vw - 32px));
+            padding: 12px 14px;
             background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
             border-radius: 12px;
             box-shadow: 0 4px 15px rgba(0, 0, 0, 0.1);
-            gap: 12px;
             border: 1px solid rgba(255, 255, 255, 0.2);
+            backdrop-filter: blur(6px);
+            -webkit-backdrop-filter: blur(6px);
         }
         .bili-audio-download-btn {
             position: relative;
@@ -88,11 +96,12 @@
             color: #555;
             font-size: 14px;
             font-weight: 500;
-            padding: 8px 12px;
+            padding: 8px 10px;
             background: rgba(255, 255, 255, 0.8);
             border-radius: 6px;
             border-left: 3px solid #00a1d6;
-            min-width: 120px;
+            min-width: 140px;
+            flex: 1 1 140px;
         }
         .bili-audio-download-progress {
             width: 100%;
@@ -139,24 +148,6 @@
         }
     }
 
-    function findTitleElement() {
-        return document.querySelector('h1[data-title]') ||
-               document.querySelector('h1.video-title') ||
-               document.querySelector('.video-title');
-    }
-
-    function findActionBar(titleElement) {
-        const root = titleElement.closest('#viewbox_report') ||
-                     titleElement.closest('.video-info-container') ||
-                     titleElement.closest('.video-info') ||
-                     document;
-
-        return root.querySelector('.video-toolbar-left') ||
-               root.querySelector('.video-info-detail-list') ||
-               root.querySelector('.video-desc') ||
-               (root === document ? null : root.querySelector('.toolbar-left'));
-    }
-
     function removeDownloadUI() {
         const existing = document.getElementById(UI_CONTAINER_ID);
         if (existing) existing.remove();
@@ -166,6 +157,7 @@
         const buttonContainer = document.createElement('div');
         buttonContainer.id = UI_CONTAINER_ID;
         buttonContainer.className = 'bili-audio-download-container';
+        buttonContainer.setAttribute('data-bili-audio-downloader', '1');
 
         const downloadM4ABtn = document.createElement('button');
         downloadM4ABtn.className = 'bili-audio-download-btn';
@@ -200,24 +192,20 @@
             return;
         }
 
+        if (!document.body) return;
         ensureStyles();
-
-        const titleElement = findTitleElement();
-        if (!titleElement) return;
-
-        const actionBar = findActionBar(titleElement);
-        if (!actionBar) return;
 
         let container = document.getElementById(UI_CONTAINER_ID);
 
-        if (container && !actionBar.contains(container)) {
-            container.remove();
-            container = null;
-        }
-
         if (!container) {
             container = buildDownloadUI();
-            actionBar.appendChild(container);
+            document.body.appendChild(container);
+            return;
+        }
+
+        if (container.parentElement !== document.body) {
+            container.remove();
+            document.body.appendChild(container);
         }
     }
 
@@ -418,7 +406,8 @@
 
     // 更新状态显示
     function updateStatus(message, hideAfter = 0) {
-        const statusDiv = document.querySelector('.bili-audio-download-status');
+        const container = document.getElementById(UI_CONTAINER_ID);
+        const statusDiv = container?.querySelector('.bili-audio-download-status') || null;
         if (statusDiv) {
             const statusText = statusDiv.querySelector('.status-text');
             if (statusText) {
@@ -444,7 +433,8 @@
 
     // 更新进度条
     function updateProgress(percent) {
-        const progressBar = document.querySelector('.bili-audio-download-progress-bar');
+        const container = document.getElementById(UI_CONTAINER_ID);
+        const progressBar = container?.querySelector('.bili-audio-download-progress-bar') || null;
         if (progressBar) {
             progressBar.style.width = `${percent}%`;
         }
@@ -452,7 +442,8 @@
 
     // 开始下载流程
     async function startAudioDownload(format = 'm4a') {
-        const downloadBtns = document.querySelectorAll('.bili-audio-download-btn');
+        const container = document.getElementById(UI_CONTAINER_ID);
+        const downloadBtns = container ? container.querySelectorAll('.bili-audio-download-btn') : [];
 
         try {
             // 禁用所有按钮防止重复点击，添加加载动画
@@ -527,20 +518,11 @@
         }, 1500);
     }
 
-    function setupSpaUrlListener() {
-        const onUrlChange = () => {
-            scheduleEnsure(800);
-        };
-
-        if (typeof window.onurlchange !== 'undefined' && window.onurlchange === null) {
-            window.addEventListener('urlchange', onUrlChange);
-        }
-    }
-
     function initScript() {
-        scheduleEnsure(0);
-        startEnsureLoop();
-        setupSpaUrlListener();
+        window.setTimeout(() => {
+            scheduleEnsure(0);
+            startEnsureLoop();
+        }, 2500);
     }
 
     if (document.readyState === 'loading') {
