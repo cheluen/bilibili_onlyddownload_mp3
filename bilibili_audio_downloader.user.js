@@ -1,13 +1,15 @@
 // ==UserScript==
 // @name         Bilibili音频下载器
 // @namespace    http://tampermonkey.net/
-// @version      0.6
+// @version      0.6.1
 // @description  从B站视频中提取音频并下载为MP3或M4A格式
 // @author       cheluen
 // @match        *://www.bilibili.com/video/*
+// @run-at       document-idle
 // @grant        GM_xmlhttpRequest
 // @grant        GM_download
-// @grant        unsafeWindow
+// @grant        GM_addStyle
+// @grant        window.onurlchange
 // @connect      api.bilibili.com
 // @connect      *
 // ==/UserScript==
@@ -15,9 +17,10 @@
 (function() {
     'use strict';
 
-    // 样式设置
-    const style = document.createElement('style');
-    style.textContent = `
+    const STYLE_ID = 'bili-audio-downloader-style';
+    const UI_CONTAINER_ID = 'bili-audio-download-container';
+
+    const CSS = `
         .bili-audio-download-container {
             display: inline-flex;
             align-items: center;
@@ -106,93 +109,116 @@
             transition: width 0.3s ease;
             width: 0%;
         }
-        @keyframes pulse {
+        @keyframes bili-audio-download-pulse {
             0%, 100% { opacity: 1; }
             50% { opacity: 0.7; }
         }
         .bili-audio-download-btn.loading {
-            animation: pulse 1.5s infinite;
+            animation: bili-audio-download-pulse 1.5s infinite;
         }
     `;
-    document.head.appendChild(style);
 
-    // 标记按钮是否已添加
-    let buttonAdded = false;
-    let currentUrl = '';
+    function isVideoPage() {
+        return /\/video\/[^/?#]+/.test(window.location.pathname);
+    }
 
-    // 添加下载按钮
-    function addDownloadButton() {
-        // 检查URL是否变化，如果变化则重置按钮状态
-        if (currentUrl !== window.location.href) {
-            currentUrl = window.location.href;
-            buttonAdded = false;
-            // 移除旧的按钮容器
-            const oldContainer = document.querySelector('.bili-audio-download-container');
-            if (oldContainer) oldContainer.remove();
+    function ensureStyles() {
+        if (document.getElementById(STYLE_ID)) return;
+
+        let styleEl = null;
+        if (typeof GM_addStyle === 'function') {
+            styleEl = GM_addStyle(CSS);
+        } else {
+            styleEl = document.createElement('style');
+            styleEl.textContent = CSS;
+            (document.head || document.documentElement).appendChild(styleEl);
         }
 
-        // 如果按钮已添加，则不再重复添加
-        if (buttonAdded) return;
+        if (styleEl) {
+            styleEl.id = STYLE_ID;
+        }
+    }
 
-        // 等待视频信息加载完成
-        const checkInterval = setInterval(() => {
-            // 更新的选择器，适配新版B站页面
-            const titleElement = document.querySelector('h1[data-title]') ||
-                                document.querySelector('.video-title') ||
-                                document.querySelector('h1.video-title');
+    function findTitleElement() {
+        return document.querySelector('h1[data-title]') ||
+               document.querySelector('h1.video-title') ||
+               document.querySelector('.video-title');
+    }
 
-            if (titleElement) {
-                clearInterval(checkInterval);
+    function findActionBar(titleElement) {
+        const root = titleElement.closest('#viewbox_report') ||
+                     titleElement.closest('.video-info-container') ||
+                     titleElement.closest('.video-info') ||
+                     document;
 
-                // 查找合适的位置添加按钮，使用更准确的选择器
-                const actionBar = document.querySelector('.video-toolbar-left') ||
-                                  document.querySelector('.toolbar-left') ||
-                                  document.querySelector('.video-info-detail-list') ||
-                                  document.querySelector('.video-desc');
+        return root.querySelector('.video-toolbar-left') ||
+               root.querySelector('.video-info-detail-list') ||
+               root.querySelector('.video-desc') ||
+               (root === document ? null : root.querySelector('.toolbar-left'));
+    }
 
-                if (actionBar) {
-                    // 创建按钮容器
-                    const buttonContainer = document.createElement('div');
-                    buttonContainer.className = 'bili-audio-download-container';
+    function removeDownloadUI() {
+        const existing = document.getElementById(UI_CONTAINER_ID);
+        if (existing) existing.remove();
+    }
 
-                    // M4A下载按钮
-                    const downloadM4ABtn = document.createElement('button');
-                    downloadM4ABtn.className = 'bili-audio-download-btn';
-                    downloadM4ABtn.innerHTML = '<span class="btn-icon">🎵</span>下载M4A';
-                    downloadM4ABtn.onclick = () => startAudioDownload('m4a');
+    function buildDownloadUI() {
+        const buttonContainer = document.createElement('div');
+        buttonContainer.id = UI_CONTAINER_ID;
+        buttonContainer.className = 'bili-audio-download-container';
 
-                    // MP3下载按钮
-                    const downloadMP3Btn = document.createElement('button');
-                    downloadMP3Btn.className = 'bili-audio-download-btn mp3';
-                    downloadMP3Btn.innerHTML = '<span class="btn-icon">🎧</span>下载MP3';
-                    downloadMP3Btn.onclick = () => startAudioDownload('mp3');
+        const downloadM4ABtn = document.createElement('button');
+        downloadM4ABtn.className = 'bili-audio-download-btn';
+        downloadM4ABtn.innerHTML = '<span class="btn-icon">🎵</span>下载M4A';
+        downloadM4ABtn.addEventListener('click', () => startAudioDownload('m4a'));
 
-                    // 状态显示
-                    const statusDiv = document.createElement('div');
-                    statusDiv.className = 'bili-audio-download-status';
-                    statusDiv.style.display = 'none';
-                    statusDiv.innerHTML = `
-                        <div class="status-text">准备中...</div>
-                        <div class="bili-audio-download-progress">
-                            <div class="bili-audio-download-progress-bar"></div>
-                        </div>
-                    `;
+        const downloadMP3Btn = document.createElement('button');
+        downloadMP3Btn.className = 'bili-audio-download-btn mp3';
+        downloadMP3Btn.innerHTML = '<span class="btn-icon">🎧</span>下载MP3';
+        downloadMP3Btn.addEventListener('click', () => startAudioDownload('mp3'));
 
-                    buttonContainer.appendChild(downloadM4ABtn);
-                    buttonContainer.appendChild(downloadMP3Btn);
-                    buttonContainer.appendChild(statusDiv);
-                    actionBar.appendChild(buttonContainer);
+        const statusDiv = document.createElement('div');
+        statusDiv.className = 'bili-audio-download-status';
+        statusDiv.style.display = 'none';
+        statusDiv.innerHTML = `
+            <div class="status-text">准备中...</div>
+            <div class="bili-audio-download-progress">
+                <div class="bili-audio-download-progress-bar"></div>
+            </div>
+        `;
 
-                    // 标记按钮已添加
-                    buttonAdded = true;
-                }
-            }
-        }, 1000);
+        buttonContainer.appendChild(downloadM4ABtn);
+        buttonContainer.appendChild(downloadMP3Btn);
+        buttonContainer.appendChild(statusDiv);
 
-        // 设置超时，避免无限等待
-        setTimeout(() => {
-            clearInterval(checkInterval);
-        }, 10000);
+        return buttonContainer;
+    }
+
+    function ensureDownloadUI() {
+        if (!isVideoPage()) {
+            removeDownloadUI();
+            return;
+        }
+
+        ensureStyles();
+
+        const titleElement = findTitleElement();
+        if (!titleElement) return;
+
+        const actionBar = findActionBar(titleElement);
+        if (!actionBar) return;
+
+        let container = document.getElementById(UI_CONTAINER_ID);
+
+        if (container && !actionBar.contains(container)) {
+            container.remove();
+            container = null;
+        }
+
+        if (!container) {
+            container = buildDownloadUI();
+            actionBar.appendChild(container);
+        }
     }
 
     // 获取视频信息
@@ -365,21 +391,22 @@
             const safeFileName = fileName.replace(/[\\/:*?"<>|]/g, '_').replace(/\s+/g, ' ').trim();
 
             // 使用GM_download下载文件
+            const objectUrl = URL.createObjectURL(blob);
             GM_download({
-                url: URL.createObjectURL(blob),
+                url: objectUrl,
                 name: safeFileName,
                 onload: function() {
                     updateProgress(100);
                     updateStatus('✅ 下载完成！', 3000);
                     // 清理URL对象
                     setTimeout(() => {
-                        URL.revokeObjectURL(blob);
+                        URL.revokeObjectURL(objectUrl);
                     }, 5000);
                 },
                 onerror: function(error) {
                     updateStatus(`❌ 下载失败: ${error.message || error}`, 5000);
                     updateProgress(0);
-                    URL.revokeObjectURL(blob);
+                    URL.revokeObjectURL(objectUrl);
                 }
             });
         } catch (error) {
@@ -480,32 +507,45 @@
         }
     }
 
-    // 使用一个统一的初始化函数
+    let ensureLoopId = null;
+    let ensureScheduled = false;
+
+    function scheduleEnsure(delayMs = 0) {
+        if (ensureScheduled) return;
+        ensureScheduled = true;
+        window.setTimeout(() => {
+            ensureScheduled = false;
+            ensureDownloadUI();
+        }, delayMs);
+    }
+
+    function startEnsureLoop() {
+        if (ensureLoopId !== null) return;
+        ensureLoopId = window.setInterval(() => {
+            if (document.visibilityState === 'hidden') return;
+            ensureDownloadUI();
+        }, 1500);
+    }
+
+    function setupSpaUrlListener() {
+        const onUrlChange = () => {
+            scheduleEnsure(800);
+        };
+
+        if (typeof window.onurlchange !== 'undefined' && window.onurlchange === null) {
+            window.addEventListener('urlchange', onUrlChange);
+        }
+    }
+
     function initScript() {
-        addDownloadButton();
+        scheduleEnsure(0);
+        startEnsureLoop();
+        setupSpaUrlListener();
     }
 
-    // 监听页面变化，支持SPA路由
-    function observePageChanges() {
-        let lastUrl = location.href;
-        new MutationObserver(() => {
-            const url = location.href;
-            if (url !== lastUrl) {
-                lastUrl = url;
-                // URL变化时重新初始化
-                setTimeout(initScript, 1000);
-            }
-        }).observe(document, { subtree: true, childList: true });
-    }
-
-    // 初始化脚本
     if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', () => {
-            initScript();
-            observePageChanges();
-        });
+        document.addEventListener('DOMContentLoaded', initScript);
     } else {
         initScript();
-        observePageChanges();
     }
 })();
